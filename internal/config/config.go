@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,13 @@ type Config struct {
 	CronSecret             string
 	MaxUploadSizeMB        int64
 	DefaultObituaryPhotoURL string
+
+	// Cloudinary Image Storage Integration
+	CloudinaryCloudName    string
+	CloudinaryAPIKey       string
+	CloudinaryAPISecret    string
+	CloudinaryUploadPreset string
+	CloudinaryFolder       string
 }
 
 // Load reads configuration from environment variables and optional .env file.
@@ -29,7 +37,7 @@ func Load() *Config {
 	// Try loading .env file if it exists
 	loadDotEnv(".env")
 
-	return &Config{
+	c := &Config{
 		Port:                   getEnv("PORT", "8080"),
 		AppEnv:                 getEnv("APP_ENV", "development"),
 		AppBaseURL:             strings.TrimRight(getEnv("APP_BASE_URL", "http://localhost:8080"), "/"),
@@ -43,7 +51,29 @@ func Load() *Config {
 		CronSecret:             getEnv("CRON_SECRET", ""),
 		MaxUploadSizeMB:        int64(getEnvInt("MAX_UPLOAD_SIZE_MB", 5)),
 		DefaultObituaryPhotoURL: getEnv("DEFAULT_OBITUARY_PHOTO_URL", "https://images.unsplash.com/photo-1518495973542-4542c06a5843?auto=format&fit=crop&w=800&q=80"),
+
+		CloudinaryCloudName:    getEnv("CLOUDINARY_CLOUD_NAME", ""),
+		CloudinaryAPIKey:       getEnv("CLOUDINARY_API_KEY", ""),
+		CloudinaryAPISecret:    getEnv("CLOUDINARY_API_SECRET", ""),
+		CloudinaryUploadPreset: getEnv("CLOUDINARY_UPLOAD_PRESET", ""),
+		CloudinaryFolder:       getEnv("CLOUDINARY_FOLDER", "berita-duka"),
 	}
+
+	// Parse unified CLOUDINARY_URL format if provided: cloudinary://<api_key>:<api_secret>@<cloud_name>
+	cloudinaryURL := getEnv("CLOUDINARY_URL", "")
+	if cloudinaryURL != "" && c.CloudinaryCloudName == "" {
+		if parsed, err := url.Parse(cloudinaryURL); err == nil && parsed.Scheme == "cloudinary" {
+			c.CloudinaryCloudName = parsed.Host
+			if parsed.User != nil {
+				c.CloudinaryAPIKey = parsed.User.Username()
+				if pass, ok := parsed.User.Password(); ok {
+					c.CloudinaryAPISecret = pass
+				}
+			}
+		}
+	}
+
+	return c
 }
 
 func getEnv(key, fallback string) string {

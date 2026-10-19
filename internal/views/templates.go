@@ -274,8 +274,13 @@ func renderBio(bio string) string {
 	`, html.EscapeString(bio))
 }
 
-// RenderCreateForm generates the responsive self-service submission form for family members.
-func RenderCreateForm(baseURL, siteName string) string {
+// RenderCreateForm generates the responsive self-service submission form for family members with Cloudinary upload support.
+func RenderCreateForm(baseURL, siteName string, cloudinaryEnabled bool) string {
+	cldNotice := "Cloudinary aktif: Foto yang dipilih akan langsung diunggah otomatis."
+	if !cloudinaryEnabled {
+		cldNotice = "Cloudinary belum dikonfigurasi di server: Gunakan tautan URL foto langsung atau atur kredensial Cloudinary di .env."
+	}
+
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -336,11 +341,36 @@ func RenderCreateForm(baseURL, siteName string) string {
 					</div>
 				</div>
 
-				<div>
-					<label class="block text-xs font-medium text-stone-300 mb-1">Tautan Foto Almarhum (URL Gambar)</label>
-					<input type="url" name="photo_url" placeholder="https://..." 
-					       class="w-full px-4 py-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 text-sm focus:outline-none focus:border-amber-500">
-					<p class="text-stone-400 text-xs mt-1">Gunakan URL foto dari Cloudinary, Imgur, Google Drive (direct link), atau biarkan kosong untuk foto standar.</p>
+				<!-- Cloudinary Photo Uploader Component -->
+				<div class="space-y-2 p-4 bg-stone-950/70 border border-stone-800 rounded-2xl">
+					<label class="block text-xs font-medium text-amber-400">Foto Almarhum / Almarhumah</label>
+					
+					<div class="flex items-center gap-4">
+						<div id="previewContainer" class="w-20 h-20 rounded-full border-2 border-stone-700 bg-stone-900 overflow-hidden flex items-center justify-center shrink-0">
+							<img id="photoPreview" src="https://images.unsplash.com/photo-1518495973542-4542c06a5843?auto=format&fit=crop&w=200&q=80" 
+							     alt="Preview" class="w-full h-full object-cover filter grayscale">
+						</div>
+						<div class="space-y-1 flex-1">
+							<input type="file" id="photoFileInput" accept="image/*" class="block w-full text-xs text-stone-400
+							       file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0
+							       file:text-xs file:font-medium file:bg-amber-600/80 file:text-white
+							       hover:file:bg-amber-600 file:cursor-pointer">
+							<div id="uploadStatus" class="text-xs text-stone-400 italic">Pilih foto dari galeri atau kamera ponsel</div>
+						</div>
+					</div>
+
+					<input type="hidden" name="photo_url" id="photoUrlInput" value="">
+
+					<div class="pt-2 border-t border-stone-800/80">
+						<details class="text-xs text-stone-400 cursor-pointer">
+							<summary class="hover:text-stone-300">Atau masukkan link gambar manual (URL)</summary>
+							<div class="mt-2">
+								<input type="url" id="manualUrlInput" placeholder="https://res.cloudinary.com/..." 
+								       class="w-full px-3 py-2 bg-stone-900 border border-stone-800 rounded-xl text-stone-200 text-xs focus:outline-none focus:border-amber-500">
+							</div>
+						</details>
+					</div>
+					<p class="text-[11px] text-stone-400 italic">%s</p>
 				</div>
 
 				<div>
@@ -455,6 +485,53 @@ func RenderCreateForm(baseURL, siteName string) string {
 		const submitBtn = document.getElementById('submitBtn');
 		const resultModal = document.getElementById('resultModal');
 		const micrositeLink = document.getElementById('micrositeLink');
+		const photoFileInput = document.getElementById('photoFileInput');
+		const photoPreview = document.getElementById('photoPreview');
+		const photoUrlInput = document.getElementById('photoUrlInput');
+		const manualUrlInput = document.getElementById('manualUrlInput');
+		const uploadStatus = document.getElementById('uploadStatus');
+
+		// Handle asynchronous Cloudinary file upload
+		photoFileInput.addEventListener('change', async (e) => {
+			const file = e.target.files[0];
+			if (!file) return;
+
+			// Preview locally immediately
+			photoPreview.src = URL.createObjectURL(file);
+			photoPreview.classList.remove('grayscale');
+			uploadStatus.innerText = '⏳ Mengunggah foto ke Cloudinary...';
+			uploadStatus.className = 'text-xs text-amber-400 font-medium';
+
+			const formData = new FormData();
+			formData.append('photo', file);
+
+			try {
+				const res = await fetch('%s/api/upload', {
+					method: 'POST',
+					body: formData
+				});
+				const data = await res.json();
+				if (!res.ok) throw new Error(data.error || 'Gagal mengunggah foto');
+
+				photoUrlInput.value = data.url;
+				manualUrlInput.value = data.url;
+				photoPreview.src = data.url;
+				uploadStatus.innerText = '✓ Foto berhasil tersimpan di Cloudinary';
+				uploadStatus.className = 'text-xs text-emerald-400 font-medium';
+			} catch (err) {
+				uploadStatus.innerText = '⚠️ ' + err.message;
+				uploadStatus.className = 'text-xs text-rose-400';
+			}
+		});
+
+		manualUrlInput.addEventListener('input', (e) => {
+			const val = e.target.value.trim();
+			photoUrlInput.value = val;
+			if (val) {
+				photoPreview.src = val;
+				photoPreview.classList.remove('grayscale');
+			}
+		});
 
 		form.addEventListener('submit', async (e) => {
 			e.preventDefault();
@@ -505,7 +582,7 @@ func RenderCreateForm(baseURL, siteName string) string {
 
 </body>
 </html>`,
-		html.EscapeString(siteName), baseURL, baseURL,
+		html.EscapeString(siteName), baseURL, html.EscapeString(cldNotice), baseURL, baseURL,
 	)
 }
 

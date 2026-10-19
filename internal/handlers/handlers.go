@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/tikidata-analytics/berita-duka-webapp/internal/cloudinary"
 	"github.com/tikidata-analytics/berita-duka-webapp/internal/config"
 	"github.com/tikidata-analytics/berita-duka-webapp/internal/db"
 	"github.com/tikidata-analytics/berita-duka-webapp/internal/models"
@@ -17,6 +19,7 @@ import (
 type Handler struct {
 	repo *db.Repository
 	cfg  *config.Config
+	cld  *cloudinary.Client
 }
 
 // NewHandler initializes a new Handler instance.
@@ -24,6 +27,7 @@ func NewHandler(repo *db.Repository, cfg *config.Config) *Handler {
 	return &Handler{
 		repo: repo,
 		cfg:  cfg,
+		cld:  cloudinary.NewClient(cfg),
 	}
 }
 
@@ -33,6 +37,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/create", h.CreateFormHandler)
 	mux.HandleFunc("/m/", h.MicrositeHandler)
 	mux.HandleFunc("/api/obituaries", h.ObituariesAPIHandler)
+	mux.HandleFunc("/api/upload", h.UploadImageHandler)
 	mux.HandleFunc("/api/purge", h.PurgeHandler)
 }
 
@@ -45,7 +50,6 @@ func (h *Handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
 
 	obituaries, err := h.repo.ListRecent(r.Context(), 18)
 	if err != nil {
-		// If DB error, render empty list gracefully
 		obituaries = []models.Obituary{}
 	}
 
@@ -57,7 +61,7 @@ func (h *Handler) HomeHandler(w http.ResponseWriter, r *http.Request) {
 // CreateFormHandler serves the self-service obituary submission form.
 func (h *Handler) CreateFormHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	html := views.RenderCreateForm(h.cfg.AppBaseURL, h.cfg.SiteName)
+	html := views.RenderCreateForm(h.cfg.AppBaseURL, h.cfg.SiteName, h.cld.IsConfigured())
 	_, _ = w.Write([]byte(html))
 }
 
@@ -85,6 +89,69 @@ func (h *Handler) MicrositeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	html := views.RenderMicrosite(ob, h.cfg.AppBaseURL, h.cfg.SiteName)
 	_, _ = w.Write([]byte(html))
+}
+
+// UploadImageHandler handles multipart/form-data upload to Cloudinary.
+func (h *Handler) UploadImageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.cld.IsConfigured() {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"error": "Layanan Cloudinary belum dikonfigurasi di server. Silakan hubungi admin atau gunakan input URL foto langsung.",
+		})
+		return
+	}
+
+	maxBytes := h.cfg.MaxUploadSizeMB * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+
+	if err := r.ParseMultipartForm(maxBytes); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": fmt.Sprintf("Ukuran file terlalu besar. Maksimum %d MB", h.cfg.MaxUploadSizeMB),
+		})
+		return
+	}
+
+	file, header, err := r.FormFile("photo")
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "Field 'photo' wajib dilampirkan",
+		})
+		return
+	}
+	defer file.Close()
+
+	// Validate file extension
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	allowedExts := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".webp": true,
+		".gif":  true,
+	}
+	if !allowedExts[ext] {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "Format file tidak didukung. Harap unggah format JPG, PNG, atau WEBP",
+		})
+		return
+	}
+
+	secureURL, err := h.cld.UploadImage(r.Context(), file, header.Filename)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"error": fmt.Sprintf("Gagal mengunggah foto ke Cloudinary: %v", err),
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"url":     secureURL,
+	})
 }
 
 // ObituariesAPIHandler handles GET (list) and POST (create) on /api/obituaries.
@@ -191,9 +258,7 @@ func (h *Handler) ObituariesAPIHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // PurgeHandler executes the automatic purging of expired obituaries.
-// Accessible via GET or POST, protected by CRON_SECRET if configured.
 func (h *Handler) PurgeHandler(w http.ResponseWriter, r *http.Request) {
-	// If CRON_SECRET is configured, enforce authorization
 	if h.cfg.CronSecret != "" {
 		authHeader := r.Header.Get("Authorization")
 		querySecret := r.URL.Query().Get("secret")
